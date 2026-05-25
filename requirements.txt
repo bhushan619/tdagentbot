@@ -1,0 +1,7 @@
+playwright==1.47.0
+pandas==2.2.2  # compatible via shim in main.py
+pandas_ta==0.3.14b0
+numpy==1.26.4
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
