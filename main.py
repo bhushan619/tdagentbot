@@ -53,7 +53,7 @@ from playwright.async_api import async_playwright, Page, BrowserContext
 from shared_state import (
     BOT_STATE, read_config, write_state, ROOT,
 )
-
+from ml.exporter import append_training_row
 # ---------- constants ----------
 DEMO_URL = "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
 LIVE_URL = "https://pocketoption.com/en/cabinet/quick-high-low/"
@@ -156,8 +156,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.copy()
-    df["ema9"] = ta.ema(df["close"], length=9)
-    df["ema21"] = ta.ema(df["close"], length=21)
+    df["ema_fast"] = ta.ema(df["close"], length=9)
+    df["ema_slow"] = ta.ema(df["close"], length=21)
     df["rsi"] = ta.rsi(df["close"], length=14)
     macd = ta.macd(df["close"])
     if macd is not None and not macd.empty:
@@ -170,7 +170,58 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df["bb_upper"] = bb.iloc[:, 2]
     df["ret"] = df["close"].pct_change()
     df["vol10"] = df["ret"].rolling(10).std()
-    df["momentum"] = df["close"] - df["close"].shift(5)
+
+    df["momentum"] = (
+        df["close"] -
+        df["close"].shift(5)
+    )
+
+    df["momentum_accel"] = (
+        df["momentum"] -
+        df["momentum"].shift(1)
+    )
+
+    df["candle_size"] = (
+        df["high"] - df["low"]
+    )
+
+    df["body_size"] = (
+        df["close"] - df["open"]
+    ).abs()
+    # ---------- Phase 1 ML Features ----------
+    atr = ta.atr(
+        df["high"],
+        df["low"],
+        df["close"],
+        length=14
+    )
+
+    df["atr"] = atr
+
+    df["ema_distance"] = (
+        (df["ema_fast"] - df["ema_slow"]).abs()
+    )
+
+    candle_range = (
+        df["high"] - df["low"]
+    ).replace(0, 1e-9)
+
+    upper_wick = (
+        df["high"] - df[["open", "close"]].max(axis=1)
+    )
+
+    lower_wick = (
+        df[["open", "close"]].min(axis=1) - df["low"]
+    )
+
+    df["upper_wick_ratio"] = (
+        upper_wick / candle_range
+    )
+
+    df["lower_wick_ratio"] = (
+        lower_wick / candle_range
+    )
+
     return df
 
 
@@ -188,7 +239,7 @@ def vote_signal(df: pd.DataFrame) -> tuple[str, float]:
     bull = bear = 0
     strengths: list[float] = []
 
-    e9, e21 = last.get("ema9"), last.get("ema21")
+    e9, e21 = last.get("ema_fast"), last.get("ema_slow")
     if pd.notna(e9) and pd.notna(e21):
         if e9 > e21:
             bull += 1
@@ -227,7 +278,28 @@ def vote_signal(df: pd.DataFrame) -> tuple[str, float]:
     conf = 0.5 * agreement + 0.5 * avg_strength
     direction = "BUY" if bull > bear else "SELL"
     return direction, round(min(conf, 1.0), 2)
+    
+def choose_expiry(conf, atr, ema_distance):
 
+    atr = float(atr or 0)
+    ema_distance = float(ema_distance or 0)
+
+    # strongest trends
+    if (
+        conf >= 0.85
+        and atr >= 0.00020
+        and ema_distance >= 0.00012
+    ):
+        return "M1", 60
+
+    # strong continuation
+    if (
+        conf >= 0.72
+        and ema_distance >= 0.00004
+    ):
+        return "S30", 30
+
+    return None, None
 
 # ---------- Bot ----------
 class PocketOptionBot:
@@ -241,6 +313,7 @@ class PocketOptionBot:
 
         self.trades = 0
         self.wins = 0
+        self.draws = 0
         self.pnl = 0.0
         self.consecutive_losses = 0
         self.daily_loss = 0.0
@@ -255,26 +328,109 @@ class PocketOptionBot:
         self._ws_labels_seen: set[str] = set()
         self._last_label_log = 0.0
 
+        self.last_trade_ts = 0
+        self.last_trade_candle_ts = None
+        self.last_saved_ts = None
+
+        self.start_balance = 0.0
+
+    # ----- cooldown active -----
+
+    def _cooldown_active(self) -> bool:
+
+        cooldown = self.cfg.get(
+            "trade_cooldown_sec",
+            10
+        )
+
+        return (
+            time.time() - self.last_trade_ts
+        ) < cooldown
+
     # ----- state sync -----
     def _push_state(self, status: str) -> None:
-        win_rate = (self.wins / self.trades * 100) if self.trades else 0.0
-        state = {
-            "balance": round(self.balance, 2),
-            "pnl": round(self.pnl, 2),
-            "win_rate": round(win_rate, 1),
-            "trades": self.trades,
-            "wins": self.wins,
-            "bot_status": status,
-            "last_signal": self.last_signal,
-            "last_result": self.last_result,
-            "consecutive_losses": self.consecutive_losses,
-            "daily_loss": round(self.daily_loss, 2),
-            "mode": self.cfg["mode"],
-            "symbol": self.symbol,
-            "session_started_at": self.session_started_at,
-        }
-        write_state(state)
 
+        losses = self.trades - self.wins - self.draws
+
+        effective_trades = self.wins + losses
+
+        win_rate = (
+            (self.wins / effective_trades) * 100
+            if effective_trades > 0 else 0.0
+        )
+
+        state = {
+            "balance": round(float(self.balance), 2),
+
+            "pnl": round(float(self.pnl), 2),
+
+            "win_rate": round(win_rate, 1),
+
+            "trades": int(self.trades),
+
+            "wins": int(self.wins),
+
+            "draws": int(self.draws),
+
+            "losses": int(losses),
+
+            "bot_status": status,
+
+            "last_signal": self.last_signal,
+
+            "last_result": self.last_result,
+
+            "last_confidence": getattr(
+                self,
+                "last_confidence",
+                0.0
+            ),
+
+            "consecutive_losses": int(
+                self.consecutive_losses
+            ),
+
+            "daily_loss": round(
+                float(self.daily_loss),
+                2
+            ),
+
+            "mode": self.cfg["mode"],
+
+            "symbol": self.symbol,
+
+            "session_started_at": self.session_started_at,
+
+            "session_id": self.session_id,
+
+            "dataset_rows": getattr(
+                self,
+                "dataset_rows",
+                0
+            ),
+
+            "model_loaded": getattr(
+                self,
+                "model_loaded",
+                False
+            ),
+
+            "trade_duration_label": (
+                f"S{self.cfg['trade_duration_sec']}"
+                if self.cfg["trade_duration_sec"] < 60
+                else (
+                    f"M{int(self.cfg['trade_duration_sec'] / 60)}"
+                    if self.cfg["trade_duration_sec"] < 3600
+                    else f"H{int(self.cfg['trade_duration_sec'] / 3600)}"
+                )
+            ),
+
+            "timestamp": datetime.now(
+                timezone.utc
+            ).isoformat(),
+        }
+
+        write_state(state)
     # ----- WS handling -----
     def _attach_ws(self, page: Page) -> None:
         def on_websocket(ws):
@@ -413,18 +569,40 @@ class PocketOptionBot:
     ]
 
     _DURATION_LABELS = {
-        5: ["S5", "5S", "5 sec", "5 second", "00:00:05"],
-        10: ["S10", "10S", "10 sec", "10 second", "00:00:10"],
+        3: ["S3", "53", "3 sec", "3 second", "00:00:03"],
         15: ["S15", "15S", "15 sec", "15 second", "00:00:15"],
         30: ["S30", "30S", "30 sec", "30 second", "00:00:30"],
         60: ["M1", "1M", "1 min", "1 minute", "00:01:00"],
         180: ["M3", "3M", "3 min", "3 minute", "00:03:00"],
         300: ["M5", "5M", "5 min", "5 minute", "00:05:00"],
+        1800: ["M30", "30M", "30 min", "30 minute", "00:30:00"],
+        3600: ["H1", "60M", "60 min", "60 minute", "01:00:00"],
     }
 
     @staticmethod
     def _norm_text(value: Any) -> str:
         return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+    @staticmethod
+    def normalize_expiry(label: str) -> int:
+
+        import re
+
+        l = label.lower().strip()
+
+        if "sec" in l:
+            return int(re.findall(r"\d+", l)[0])
+
+        if "min" in l:
+            return int(re.findall(r"\d+", l)[0]) * 60
+
+        if l.startswith("s"):
+            return int(re.findall(r"\d+", l)[0])
+
+        if l.startswith("m"):
+            return int(re.findall(r"\d+", l)[0]) * 60
+
+        return 0
 
     @staticmethod
     def _amount_number(value: Any) -> Optional[float]:
@@ -519,12 +697,29 @@ class PocketOptionBot:
                     item = items.nth(i)
                     if not await item.is_visible():
                         continue
-                    txt = (await item.inner_text(timeout=1000) or "").strip()
-                    n_txt = self._norm_text(txt)
-                    if n_txt in acceptable or any(a and a in n_txt for a in acceptable):
+                    txt = (
+                        await item.inner_text(timeout=1000)
+                        or ""
+                    ).strip()
+
+                    txt_seconds = self.normalize_expiry(txt)
+
+                    target_seconds = [
+                        self.normalize_expiry(x)
+                        for x in labels
+                    ]
+
+                    if txt_seconds in target_seconds:
+
                         await item.click(timeout=3000)
+
                         await asyncio.sleep(0.35)
-                        log(f"Duration selected from popup: {txt}")
+
+                        log(
+                            f"Duration selected from popup: "
+                            f"{txt}"
+                        )
+
                         return True
             except Exception:
                 continue
@@ -594,9 +789,18 @@ class PocketOptionBot:
             amount_ok, actual_amount = await self._set_amount(float(amount))
             if not amount_ok:
                 return False, actual_amount, ""
-            duration_ok, duration_label = await self._set_duration(int(duration))
-            if not duration_ok:
-                return False, actual_amount, duration_label
+            duration_label = ""
+            duration_ok = True
+
+            if self.cfg.get("duration_mode", "MANUAL") == "AUTO":
+                duration_ok, duration_label = await self._set_duration(int(duration))
+
+                if not duration_ok:
+                    return False, actual_amount, duration_label
+            else:
+                duration_label = "MANUAL"
+                log("Manual duration mode enabled")
+
             log(f"Trade params set Amount={actual_amount:g} Duration={duration_label}")
             return True, actual_amount, duration_label
         except Exception as e:
@@ -608,38 +812,63 @@ class PocketOptionBot:
             log(f"CLICKED {direction}")
             await self._page.click(sel, timeout=5000)
 
-    async def _execute_trade(self, direction: str, confidence: float) -> None:
+    async def _execute_trade(
+            self,
+            direction: str,
+            confidence: float,
+            df: pd.DataFrame,
+        ) -> bool:
+
         if self._trade_in_progress:
             log("Trade already in progress, skipping")
-            return
+            return False
+
         cfg = self.cfg
+
         if not self._can_trade():
             log("BLOCKED by risk limits")
-            return
+            return False
+
         self._trade_in_progress = True
+
         try:
             await self._read_balance()
+
             balance_before = float(self.balance)
 
             ok, actual_amount, duration_label = await self._set_trade_params(
-                cfg["trade_amount"], cfg["trade_duration_sec"]
+                cfg["trade_amount"],
+                cfg["trade_duration_sec"]
             )
+
             if not ok:
                 log("Skip trade: could not verify params")
-                return
+                return False
+
             if abs(float(actual_amount) - float(cfg["trade_amount"])) > 0.01:
                 log(
                     f"WARNING: configured amount={cfg['trade_amount']} "
                     f"but broker field shows {actual_amount}"
                 )
+
             shot = SCREENSHOT_DIR / f"{int(time.time())}_{direction}.png"
+
             try:
                 await self._page.screenshot(path=str(shot))
             except Exception:
                 pass
+
             self._closed_deals.clear()
+
             await self._click_direction(direction)
-            await asyncio.sleep(cfg["trade_duration_sec"] + 3)
+
+            self.last_trade_ts = time.time()
+
+            wait_buffer = 6 if cfg["trade_duration_sec"] <= 30 else 10
+
+            wait_time = cfg["trade_duration_sec"] + wait_buffer
+
+            await asyncio.sleep(wait_time)
 
             result, pnl = await self._wait_for_trade_result(
                 direction=direction,
@@ -647,30 +876,84 @@ class PocketOptionBot:
                 timeout=cfg["trade_duration_sec"] + 10,
                 balance_before=balance_before,
             )
+
             await asyncio.sleep(0.8)
-            if await self._read_balance() is not None:
-                balance_delta = round(float(self.balance) - balance_before, 2)
-                if abs(balance_delta) > 0.01 and abs(balance_delta - pnl) > 0.01:
+
+            await self._read_balance()
+
+            # ---------------------------------------------------
+            # Use broker balance as source of truth
+            # ---------------------------------------------------
+
+            balance_after = float(self.balance)
+
+            balance_delta = round(balance_after - balance_before, 2)
+
+            if abs(balance_delta) > 0.01:
+
+                if abs(balance_delta - pnl) > 0.01:
                     log(
                         f"PnL corrected from balance delta: "
-                        f"deal_pnl={pnl:+.2f} balance_delta={balance_delta:+.2f}"
+                        f"deal_pnl={pnl:+.2f} "
+                        f"balance_delta={balance_delta:+.2f}"
                     )
-                    pnl = balance_delta
-                    result = "WIN" if pnl > 0 else "LOSS"
+
+                pnl = balance_delta
+
+                if pnl > 0:
+                    result = "WIN"
+
+                elif pnl < 0:
+                    result = "LOSS"
+
+                else:
+                    result = "DRAW"
+
+            # ---------------------------------------------------
+            # Stats
+            # ---------------------------------------------------
+
             self.trades += 1
-            self.pnl += pnl
+
+            # IMPORTANT FIX
+            self.pnl = round(
+                float(self.balance) - float(self.start_balance),
+                2
+            )
+
             if result == "WIN":
+
                 self.wins += 1
                 self.consecutive_losses = 0
-            else:
-                self.consecutive_losses += 1
-                self.daily_loss += abs(float(pnl))
 
+            elif result == "LOSS":
+
+                self.consecutive_losses += 1
+                self.daily_loss = abs(
+                    min(0, float(self.pnl))
+                )
+
+            elif result == "DRAW":
+                self.draws += 1
+                log("Draw trade recorded")
             self.last_signal = direction
             self.last_result = result
-            color = "WIN" if result == "WIN" else "LOSS"
+
+            if result == "WIN":
+                color = "WIN"
+            elif result == "DRAW":
+                color = "DRAW"
+            else:
+                color = "LOSS"
+
             log(f"Trade Result: {color} pnl={pnl:+.2f}")
-            self._push_state("RUNNING")
+
+            log(
+                f"SESSION => "
+                f"wins={self.wins} "
+                f"losses={self.trades - self.wins - self.draws} "
+                f"session_pnl={self.pnl:+.2f}"
+            )
 
             db_insert_trade({
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -685,17 +968,86 @@ class PocketOptionBot:
                 "balance_after": self.balance,
                 "mode": cfg["mode"],
             })
-            self._push_state("TRADING")
+
+            latest = df.iloc[-1]
+
+            append_training_row({
+
+                "timestamp": latest["t"],
+
+                "open": latest["open"],
+                "high": latest["high"],
+                "low": latest["low"],
+                "close": latest["close"],
+                "volume": latest.get("volume", 0),
+
+                "rsi": latest.get("rsi"),
+                "ema_fast": latest.get("ema_fast"),
+                "ema_slow": latest.get("ema_slow"),
+
+                "macd": latest.get("macd"),
+                "macd_signal": latest.get("macd_signal"),
+
+                "signal": direction,
+                "confidence": confidence,
+
+                "executed": True,
+                "rejection_reason": "",
+
+                "result": result,
+                "pnl": pnl,
+
+                "future_close": latest["close"],
+                "future_move": 0,
+
+                "candle_size": (
+                    latest["high"] - latest["low"]
+                ),
+
+                "body_size": abs(
+                    latest["close"] - latest["open"]
+                ),
+
+                "atr": latest.get("atr"),
+
+                "ema_distance": latest.get(
+                    "ema_distance"
+                ),
+
+                "upper_wick_ratio": latest.get(
+                    "upper_wick_ratio"
+                ),
+
+                "lower_wick_ratio": latest.get(
+                    "lower_wick_ratio"
+                ),
+
+                "momentum_accel": latest.get(
+                    "momentum_accel"
+                ),
+            })
+
+            self._push_state("RUNNING")
+
+            return True
+
+        except Exception as e:
+
+            log(f"_execute_trade error: {e}")
+
+            return False
+
         finally:
-            self._trade_in_progress = False
+
+            self._trade_in_progress = False    
 
     async def _wait_for_trade_result(
-        self,
-        direction: str,
-        amount: float,
-        timeout: int = 30,
-        balance_before: Optional[float] = None,
-    ) -> tuple[str, float]:
+            self,
+            direction: str,
+            amount: float,
+            timeout: int = 30,
+            balance_before: Optional[float] = None,
+        ) -> tuple[str, float]:
 
         start = time.time()
 
@@ -743,16 +1095,46 @@ class PocketOptionBot:
                                 return result, delta
 
                     win_field = str(deal.get("win", deal.get("result", ""))).lower()
-                    is_win = profit > 0 or win_field in ("win", "won", "true", "1", "success")
-                    if is_win:
+                    is_draw = (
+                        abs(profit) < 0.01
+                        or abs(profit - invested) < 0.01
+                    )
+
+                    is_win = (
+                        not is_draw
+                        and (
+                            profit > 0
+                            or win_field in (
+                                "win",
+                                "won",
+                                "true",
+                                "1",
+                                "success",
+                            )
+                        )
+                    )
+                    if is_draw:
+
+                        result = "DRAW"
+                        pnl = 0.0
+
+                    elif is_win:
+
                         result = "WIN"
-                        # If profit is gross returned amount, subtract stake;
-                        # if it is already net profit, keep it.
-                        pnl = profit - invested if profit > invested else profit
+
+                        pnl = (
+                            profit - invested
+                            if profit > invested
+                            else profit
+                        )
+
                         if pnl <= 0:
                             pnl = invested * 0.8
+
                         pnl = round(pnl, 2)
+
                     else:
+
                         result = "LOSS"
                         pnl = -round(invested, 2)
 
@@ -769,15 +1151,23 @@ class PocketOptionBot:
             await asyncio.sleep(1)
 
         if balance_before is not None and await self._read_balance() is not None:
-            delta = round(float(self.balance) - float(balance_before), 2)
+            delta = round(
+                float(self.balance) - float(balance_before),
+                2
+            )
             if abs(delta) > 0.01:
                 result = "WIN" if delta > 0 else "LOSS"
-                log(f"Trade result inferred from balance delta {result} pnl={delta:+.2f}")
+                log(
+                    f"Trade result inferred from balance delta "
+                    f"{result} pnl={delta:+.2f}"
+                )
                 return result, delta
 
+            # no balance movement = unresolved/draw
+            log("Trade result unresolved, marking as DRAW")
+            return "DRAW", 0.0
         log("Trade result timeout")
-
-        return "LOSS", -float(amount)
+        return "DRAW", 0.0
 
     def _can_trade(self) -> bool:
         cfg = self.cfg
@@ -811,6 +1201,7 @@ class PocketOptionBot:
                 f"labels={sorted(self._ws_labels_seen)[:8]})"
             )
             self._push_state("WARMUP")
+            await self._read_balance()
             return
 
         # IMPORTANT FIX
@@ -822,24 +1213,274 @@ class PocketOptionBot:
 
         direction, conf = vote_signal(df)
 
-        log(f"Signal: {direction} conf={conf:.2f}")
+        latest = df.iloc[-1]
 
+        if direction == "NONE":
+
+            if self.last_saved_ts == latest["t"]:
+                return
+
+            self.last_saved_ts = latest["t"]
+
+            append_training_row({
+
+                "timestamp": latest["t"],
+
+                "open": latest["open"],
+                "high": latest["high"],
+                "low": latest["low"],
+                "close": latest["close"],
+                "volume": latest.get("volume", 0),
+
+                "rsi": latest.get("rsi"),
+                "ema_fast": latest.get("ema_fast"),
+                "ema_slow": latest.get("ema_slow"),
+
+                "macd": latest.get("macd"),
+                "macd_signal": latest.get("macd_signal"),
+
+                "signal": "NONE",
+                "confidence": conf,
+
+                "executed": False,
+                "rejection_reason": "NO_SIGNAL",
+
+                "result": "",
+                "pnl": 0,
+
+                "future_close": latest["close"],
+                "future_move": 0,
+                "candle_size": latest["high"] - latest["low"],
+                "body_size": abs(latest["close"] - latest["open"]),
+
+                "atr": latest.get("atr"),
+                "ema_distance": latest.get("ema_distance"),
+
+                "upper_wick_ratio": latest.get("upper_wick_ratio"),
+                "lower_wick_ratio": latest.get("lower_wick_ratio"),
+
+                "momentum_accel": latest.get("momentum_accel"),
+            })
+
+            self._push_state("RUNNING")
+
+            return True
+
+        self.last_confidence = conf
+
+        # avoid flat RSI chop market
+        rsi = latest.get("rsi", 50)
+
+        if 48 <= rsi <= 52:
+            log("Skipping flat RSI market")
+            return
+
+        # sideways market filter
+        recent_range = (
+            df["high"].tail(8).max() -
+            df["low"].tail(8).min()
+        )
+        if recent_range < 0.00020:
+            log(
+                f"Skipping sideways market "
+                f"(range={recent_range:.6f})"
+            )
+            return
+
+        # candle exhaustion filter
+        candle_size = max(
+            latest.get("candle_size", 0),
+            0.000001
+        )
+
+        body_size = latest.get("body_size", 0)
+
+        body_ratio = body_size / candle_size
+
+        if body_ratio > 0.92:
+
+            log(
+                f"Skipping exhaustion candle "
+                f"(body_ratio={body_ratio:.2f})"
+            )
+
+            return
+
+        prev_close = df.iloc[-2]["close"]
+        close = latest["close"]
+        move_size = abs(close - prev_close)
+        if move_size > 0.00024:
+            log(
+                f"Skipping overextended move "
+                f"(move={move_size:.6f})"
+            )
+            return
+        accel = latest.get(
+            "momentum_accel",
+            0
+        )
+
+        # allow small pullbacks, block only strong reversals
+
+        if direction == "BUY" and accel < -0.00015:
+
+            log(
+                "BUY blocked by strong bearish acceleration "
+                f"(accel={accel:.6f})"
+            )
+
+            return
+
+        if direction == "SELL" and accel > 0.00015:
+
+            log(
+                "SELL blocked by strong bullish acceleration "
+                f"(accel={accel:.6f})"
+            )
+
+            return
+
+        log(f"Signal: {direction} conf={conf:.2f}")
+        
         self.last_signal = direction
 
         self._push_state("RUNNING")
 
-        if direction == "NONE":
-            return
-
+       
         if conf < self.cfg["confidence_threshold"]:
+            append_training_row({
+
+                "timestamp": latest["t"],
+
+                "open": latest["open"],
+                "high": latest["high"],
+                "low": latest["low"],
+                "close": latest["close"],
+                "volume": latest.get("volume", 0),
+
+                "rsi": latest.get("rsi"),
+                "ema_fast": latest.get("ema_fast"),
+                "ema_slow": latest.get("ema_slow"),
+
+                "macd": latest.get("macd"),
+                "macd_signal": latest.get("macd_signal"),
+
+                "signal": direction,
+                "confidence": conf,
+
+                "executed": False,
+                "rejection_reason": "LOW_CONFIDENCE",
+
+                "result": "",
+                "pnl": 0,
+
+                "future_close": latest["close"],
+                "future_move": 0,
+                "candle_size": latest["high"] - latest["low"],
+                "body_size": abs(latest["close"] - latest["open"]),
+
+                "atr": latest.get("atr"),
+                "ema_distance": latest.get("ema_distance"),
+
+                "upper_wick_ratio": latest.get("upper_wick_ratio"),
+                "lower_wick_ratio": latest.get("lower_wick_ratio"),
+
+                "momentum_accel": latest.get("momentum_accel"),
+            })
+
             log(
-                f"Conf {conf:.2f} below threshold "
-                f"{self.cfg['confidence_threshold']}"
+                f"Conf {conf:.2f} below "
+                f"threshold {self.cfg['confidence_threshold']}"
             )
             return
 
-        await self._execute_trade(direction, conf)
+        latest_candle_ts = df.iloc[-1]["t"]
 
+        if self._cooldown_active():
+            append_training_row({
+
+                "timestamp": latest["t"],
+
+                "open": latest["open"],
+                "high": latest["high"],
+                "low": latest["low"],
+                "close": latest["close"],
+                "volume": latest.get("volume", 0),
+
+                "rsi": latest.get("rsi"),
+                "ema_fast": latest.get("ema_fast"),
+                "ema_slow": latest.get("ema_slow"),
+
+                "macd": latest.get("macd"),
+                "macd_signal": latest.get("macd_signal"),
+
+                "signal": direction,
+                "confidence": conf,
+
+                "executed": False,
+                "rejection_reason": "COOLDOWN",
+
+                "result": "",
+                "pnl": 0,
+
+                "future_close": latest["close"],
+                "future_move": 0,
+                "candle_size": latest["high"] - latest["low"],
+                "body_size": abs(latest["close"] - latest["open"]),
+
+                "atr": latest.get("atr"),
+                "ema_distance": latest.get("ema_distance"),
+
+                "upper_wick_ratio": latest.get("upper_wick_ratio"),
+                "lower_wick_ratio": latest.get("lower_wick_ratio"),
+
+                "momentum_accel": latest.get("momentum_accel"),
+            })
+            log("Cooldown active")
+            return
+
+        if self.last_trade_candle_ts == latest_candle_ts:
+            log("Already traded this candle")
+            return
+
+        ema_distance = latest.get(
+            "ema_distance",
+            0
+        )
+
+        if abs(ema_distance) < 0.000015:
+
+            log(
+                "Skipping weak trend "
+                f"(ema_distance={ema_distance:.6f})"
+            )
+
+            return
+
+        label, seconds = choose_expiry(
+            conf,
+            latest.get("atr", 0),
+            latest.get("ema_distance", 0),
+        )
+
+        if not seconds:
+            log("No valid expiry selected")
+            return
+
+        self.cfg["trade_duration_sec"] = seconds
+
+        log(
+            f"Dynamic expiry selected "
+            f"{label} ({seconds}s)"
+        )
+        await self._page.keyboard.press("Escape")
+        await asyncio.sleep(0.2)
+
+        ok = await self._execute_trade(direction, conf, df)
+
+        if ok:
+            self.last_trade_candle_ts = latest_candle_ts
+            
     # ----- Entry -----
     async def run(self) -> None:
         db_init()
@@ -875,6 +1516,27 @@ class PocketOptionBot:
                 pass
             await self._ensure_mode_url()
             await self._read_balance()
+            if self.start_balance == 0:
+                self.start_balance = float(self.balance)
+                log(f"Session start balance: {self.start_balance}")
+
+            try:
+                dataset_path = ROOT / "storage" / "datasets" / "training_data.csv"
+
+                if dataset_path.exists():
+                    import pandas as pd
+                    self.dataset_rows = len(pd.read_csv(dataset_path))
+
+            except Exception as e:
+                log(f"Dataset load error: {e}")
+
+            try:
+                model_path = ROOT / "ml" / "models" / "xgb_model.pkl"
+
+                self.model_loaded = model_path.exists()
+
+            except Exception:
+                self.model_loaded = False
             BOT_STATE["mode"] = "DEMO" if "demo" in self._page.url else "LIVE"
             self._push_state("RUNNING")
 
