@@ -12,6 +12,30 @@ const DEFAULT_CFG = {
   bypass_risk_in_demo: true,
   min_candles_required: 50,
   candle_interval_sec: 15,
+
+  duration_mode: "AUTO",
+  min_ema_distance: 0.00002,
+  max_upper_wick_ratio: 0.55,
+  max_lower_wick_ratio: 0.55,
+  pullback_threshold: 0.12,
+  max_single_candle_move: 0.00022,
+  max_recent_move_atr_multiplier: 2.8,
+  trend_age_limit: 6,
+  min_atr: 0.00012,
+  max_accel_buy: -0.00028,
+  max_accel_sell: 0.00028,
+  confidence_penalty_weak_trend: 0.08,
+  confidence_penalty_aged_trend: 0.07,
+  confidence_penalty_low_volatility: 0.06,
+  confidence_penalty_wick: 0.08,
+  enable_s15: false,
+  default_expiry: 30,
+  adaptive_mode: true,
+  dynamic_regime_enabled: true,
+  trade_cooldown_sec: 10,
+  max_trades_per_trend: 3,
+  entry_aggressiveness: "NORMAL",
+
 };
 
 function cn(...v) {
@@ -337,42 +361,12 @@ export default function App() {
       <div className="grid grid-cols-12 gap-2 flex-1 min-h-0 overflow-hidden">
 
         {/* LEFT */}
-        <div className="col-span-3 flex flex-col gap-3 min-h-0">
+        <div className="col-span-4 flex flex-col gap-3 min-h-0">
 
           <Card className="p-4">
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
               Risk
             </div>
-
-            {/* <div className="flex items-center justify-between mb-2">
-              <span className="text-zinc-400 text-sm">Current Signal</span>
-              <span className="font-bold text-lg">
-                {status.last_signal || "NONE"}
-              </span>
-            </div> */}
-
-            {/* <div className="mt-5">
-              <div className="flex items-center justify-between text-sm mb-2">
-                <span className="text-zinc-400">Confidence</span>
-                <span className="font-bold">
-                  {confidenceLabel(confidence)}
-                </span>
-              </div>
-
-            <div className="w-full h-4 bg-zinc-800 rounded-full overflow-hidden border border-zinc-700">
-                  <div
-                  className={cn(
-                    "h-full rounded-full transition-all duration-700",
-                    confidenceColor(confidence)
-                  )}
-                  style={{ width: `${confidencePct}%` }}
-                />
-              </div>
-
-              <div className="text-right text-xs text-zinc-500 mt-1">
-                {(confidence * 100).toFixed(0)}%
-              </div>
-            </div> */}
 
             <div className="mt-6 border-t border-zinc-800 pt-4">
               <Row k="Last Result" v={status.last_result || "—"}
@@ -420,7 +414,7 @@ export default function App() {
         </div>
 
         {/* CENTER */}
-        <div className="col-span-5 flex flex-col gap-3 min-h-0">
+        <div className="col-span-3 flex flex-col gap-3 min-h-0">
 
           <Card className="p-4 flex flex-col justify-center items-center">
               {/* <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-6">
@@ -476,6 +470,21 @@ export default function App() {
                     : "text-red-400"
                 )}>
                   {status.model_loaded ? "ACTIVE" : "OFFLINE"}
+                </div>
+              </div>
+
+              <div className="bg-zinc-900 rounded-xl p-3 border border-zinc-800">
+                <div className="text-zinc-500 text-xs mb-1">Market Regime</div>
+                <div className="font-bold text-fuchsia-300">
+                  {status.market_regime || "NORMAL"}
+                </div>
+              </div>
+
+              <div className="bg-zinc-900 rounded-xl p-3 border border-zinc-800">
+                <div className="text-zinc-500 text-xs mb-1">Aggressiveness</div>
+                <div className="font-bold text-orange-300">
+                  {status.entry_aggressiveness || "NORMAL"}
+
                 </div>
               </div>
 
@@ -548,7 +557,7 @@ export default function App() {
         </div>
 
         {/* RIGHT */}
-        <div className="col-span-4 flex flex-col gap-3 min-h-0">
+        <div className="col-span-5 flex flex-col gap-3 min-h-0">
 
           <Card className="p-5 flex-1 min-h-0 overflow-hidden">
             <div className="flex items-center justify-between mb-4">
@@ -587,6 +596,7 @@ export default function App() {
                     <th className="text-left py-2">Expiry</th>
                     <th className="text-left py-2">Result</th>
                     <th className="text-right py-2">PnL</th>
+                    <th className="text-right py-2">Payout</th>
                   </tr>
                 </thead>
 
@@ -643,6 +653,19 @@ export default function App() {
                         {Number(t.pnl || 0) >= 0 ? "+" : ""}
                         {Number(t.pnl || 0).toFixed(2)}
                       </td>
+                      
+                      <td
+                        className={cn(
+                          "text-right font-bold",
+                          Number(t.profit_percent || 0) > 0
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        )}
+                      >
+                        {t.profit_percent > 0
+                          ? `+${t.profit_percent}%`
+                          : `${t.profit_percent}%`}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -654,8 +677,8 @@ export default function App() {
 
       {/* CONFIG DRAWER */}
       {showConfig && form && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end">
-      <div className="w-[380px] h-full bg-zinc-950 border-l border-zinc-800 p-5 overflow-auto">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-5xl max-h-[92vh] overflow-auto bg-zinc-950 border border-zinc-800 rounded-3xl shadow-2xl p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
                 <div className="text-xl font-bold">Bot Config</div>
@@ -672,110 +695,235 @@ export default function App() {
               </button>
             </div>
 
-            <div className="space-y-4">
+            
+<div className="space-y-6">
 
-              <div className="flex gap-2">
-                {["DEMO", "LIVE"].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => updateForm({ mode: m })}
-                    className={cn(
-                      "flex-1 py-3 rounded-xl font-bold",
-                      form.mode === m
-                        ? m === "DEMO"
-                          ? "bg-blue-600"
-                          : "bg-red-600"
-                        : "bg-zinc-800 text-zinc-400"
-                    )}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
+  <div className="grid grid-cols-2 gap-3">
+    {["DEMO", "LIVE"].map((m) => (
+      <button
+        key={m}
+        onClick={() => updateForm({ mode: m })}
+        className={cn(
+          "py-4 rounded-2xl font-bold text-lg",
+          form.mode === m
+            ? m === "DEMO"
+              ? "bg-blue-600"
+              : "bg-red-600"
+            : "bg-zinc-800 text-zinc-400"
+        )}
+      >
+        {m}
+      </button>
+    ))}
+  </div>
 
-              <label className="flex items-center justify-between text-sm bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
-                <span>Bypass Risk (DEMO)</span>
-                <input
-                  type="checkbox"
-                  checked={form.bypass_risk_in_demo}
-                  onChange={(e) => updateForm({ bypass_risk_in_demo: e.target.checked })}
-                />
-              </label>
-              
-              
-              <NumField
-                label="Trade Amount"
-                v={form.trade_amount}
-                onChange={(v) => updateForm({ trade_amount: v })}
-              />
+  <div className="grid grid-cols-2 gap-6">
 
- <label className="flex flex-col gap-1 text-xs">
-              <span className="text-zinc-500">Trade Duration Mode</span>
+    <div className="space-y-5">
 
-            <select className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm"
-              value={config.duration_mode || "MANUAL"}
+      <div className="border border-zinc-800 rounded-2xl p-4">
+        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+          Trade Settings
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+
+          <NumField
+            label="Trade Amount"
+            v={form.trade_amount}
+            onChange={(v) => updateForm({ trade_amount: v })}
+          />
+
+          <NumField
+            label="Confidence Threshold"
+            v={form.confidence_threshold}
+            step={0.01}
+            onChange={(v) => updateForm({ confidence_threshold: v })}
+          />
+
+          <NumField
+            label="Max Consecutive Losses"
+            v={form.max_consecutive_losses}
+            onChange={(v) => updateForm({ max_consecutive_losses: v })}
+          />
+
+          <NumField
+            label="Max Daily Loss"
+            v={form.max_daily_loss}
+            onChange={(v) => updateForm({ max_daily_loss: v })}
+          />
+
+          <NumField
+            label="Min Candles"
+            v={form.min_candles_required}
+            onChange={(v) => updateForm({ min_candles_required: v })}
+          />
+
+          <NumField
+            label="Candle Interval"
+            v={form.candle_interval_sec}
+            onChange={(v) => updateForm({ candle_interval_sec: v })}
+          />
+
+        </div>
+
+        <label className="flex items-center justify-between text-sm bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 mt-4">
+          <span>Bypass Risk (DEMO)</span>
+          <input
+            type="checkbox"
+            checked={form.bypass_risk_in_demo}
+            onChange={(e) => updateForm({ bypass_risk_in_demo: e.target.checked })}
+          />
+        </label>
+      </div>
+
+      <div className="border border-zinc-800 rounded-2xl p-4">
+        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+          Expiry Settings
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-zinc-500">Trade Duration Mode</span>
+
+            <select
+              className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm"
+              value={form.duration_mode || "MANUAL"}
               onChange={(e) =>
-                setConfig({
-                  ...config,
-                  duration_mode: e.target.value,
-                })
+                updateForm({ duration_mode: e.target.value })
               }
             >
               <option value="MANUAL">MANUAL</option>
               <option value="AUTO">AUTO</option>
             </select>
-</label>
-              <label className="flex flex-col gap-1 text-xs">
-                <span className="text-zinc-500">Trade Expiry</span>
-                <select disabled={config.duration_mode === "AUTO"}
-                  value={form.trade_duration_sec}
-                  onChange={(e) => updateForm({ trade_duration_sec: Number(e.target.value) })}
-                  className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm"
-                >
-                  <option value={3}>S3</option>
-                  <option value={15}>S15</option>
-                  <option value={30}>S30</option>
-                  <option value={60}>M1</option>
-                  <option value={180}>M3</option>
-                  <option value={300}>M5</option>
-                  <option value={1800}>M30</option>
-                  <option value={3600}>H1</option>
-                </select>
-              </label>
 
-              <NumField
-                label="Confidence Threshold"
-                v={form.confidence_threshold}
-                step={0.01}
-                onChange={(v) => updateForm({ confidence_threshold: v })}
-              />
+            {form.duration_mode === "AUTO" && (
+              <div className="text-[11px] text-cyan-400 mt-1">
+                AI controls expiry dynamically
+              </div>
+            )}
+          </label>
 
-              <NumField
-                label="Max Consecutive Losses"
-                v={form.max_consecutive_losses}
-                onChange={(v) => updateForm({ max_consecutive_losses: v })}
-              />
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-zinc-500">Trade Expiry</span>
 
-              <NumField
-                label="Max Daily Loss"
-                v={form.max_daily_loss}
-                onChange={(v) => updateForm({ max_daily_loss: v })}
-              />
+            <select
+              disabled={form.duration_mode === "AUTO"}
+              value={form.trade_duration_sec}
+              onChange={(e) =>
+                updateForm({
+                  trade_duration_sec: Number(e.target.value),
+                })
+              }
+              className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-sm disabled:opacity-50"
+            >
+              <option value={3}>S3</option>
+              <option value={15}>S15</option>
+              <option value={30}>S30</option>
+              <option value={60}>M1</option>
+              <option value={180}>M3</option>
+            </select>
+          </label>
 
-              <NumField
-                label="Min Candles"
-                v={form.min_candles_required}
-                onChange={(v) => updateForm({ min_candles_required: v })}
-              />
+        </div>
+      </div>
 
-              <NumField
-                label="Candle Interval"
-                v={form.candle_interval_sec}
-                onChange={(v) => updateForm({ candle_interval_sec: v })}
-              />
+    </div>
 
+    <div className="space-y-5">
 
-              <button
+      <div className="border border-zinc-800 rounded-2xl p-4">
+        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+          Trend Filters
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+
+          <NumField label="Min EMA Distance" v={form.min_ema_distance} step={0.00001} onChange={(v) => updateForm({ min_ema_distance: v })} />
+          <NumField label="Min ATR" v={form.min_atr} step={0.00001} onChange={(v) => updateForm({ min_atr: v })} />
+          <NumField label="Trend Age Limit" v={form.trend_age_limit} onChange={(v) => updateForm({ trend_age_limit: v })} />
+          <NumField label="Pullback Threshold" v={form.pullback_threshold} step={0.01} onChange={(v) => updateForm({ pullback_threshold: v })} />
+          <NumField label="Upper Wick Ratio" v={form.max_upper_wick_ratio} step={0.01} onChange={(v) => updateForm({ max_upper_wick_ratio: v })} />
+          <NumField label="Lower Wick Ratio" v={form.max_lower_wick_ratio} step={0.01} onChange={(v) => updateForm({ max_lower_wick_ratio: v })} />
+
+        </div>
+      </div>
+
+      <div className="border border-zinc-800 rounded-2xl p-4">
+        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+          Momentum & Confidence
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+
+          <NumField label="Max BUY Accel" v={form.max_accel_buy} step={0.00001} onChange={(v) => updateForm({ max_accel_buy: v })} />
+          <NumField label="Max SELL Accel" v={form.max_accel_sell} step={0.00001} onChange={(v) => updateForm({ max_accel_sell: v })} />
+          <NumField label="Weak Trend Penalty" v={form.confidence_penalty_weak_trend} step={0.01} onChange={(v) => updateForm({ confidence_penalty_weak_trend: v })} />
+          <NumField label="Aged Trend Penalty" v={form.confidence_penalty_aged_trend} step={0.01} onChange={(v) => updateForm({ confidence_penalty_aged_trend: v })} />
+          <NumField label="Low Volatility Penalty" v={form.confidence_penalty_low_volatility} step={0.01} onChange={(v) => updateForm({ confidence_penalty_low_volatility: v })} />
+          <NumField label="Wick Penalty" v={form.confidence_penalty_wick} step={0.01} onChange={(v) => updateForm({ confidence_penalty_wick: v })} />
+          <NumField label="Max Candle Move" v={form.max_single_candle_move} step={0.00001} onChange={(v) => updateForm({ max_single_candle_move: v })} />
+          <NumField label="Recent Move ATR Mult" v={form.max_recent_move_atr_multiplier} step={0.1} onChange={(v) => updateForm({ max_recent_move_atr_multiplier: v })} />
+
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+      <div className="border border-zinc-800 rounded-2xl p-4">
+        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+          Adaptive AI Engine
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+
+          <label className="flex items-center justify-between text-sm bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+            <span>Adaptive Mode</span>
+            <input
+              type="checkbox"
+              checked={form.adaptive_mode}
+              onChange={(e) =>
+                updateForm({ adaptive_mode: e.target.checked })
+              }
+            />
+          </label>
+
+          <label className="flex items-center justify-between text-sm bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+            <span>Dynamic Regime Engine</span>
+            <input
+              type="checkbox"
+              checked={form.dynamic_regime_enabled}
+              onChange={(e) =>
+                updateForm({
+                  dynamic_regime_enabled: e.target.checked,
+                })
+              }
+            />
+          </label>
+
+          <NumField
+            label="Cooldown Seconds"
+            v={form.trade_cooldown_sec}
+            onChange={(v) =>
+              updateForm({ trade_cooldown_sec: v })
+            }
+          />
+
+          <NumField
+            label="Max Trades / Trend"
+            v={form.max_trades_per_trend}
+            onChange={(v) =>
+              updateForm({ max_trades_per_trend: v })
+            }
+          />
+
+        </div>
+      </div>
+
+<button
                 onClick={save}
                 disabled={saving}
                 className="w-full mt-4 bg-emerald-600 hover:bg-emerald-500 rounded-xl py-3 font-bold"

@@ -28,6 +28,8 @@ BOT_STATE = {
     "mode": "DEMO",
     "symbol": "EURUSD_otc",
     "session_started_at": None,
+    "market_regime": "NORMAL",
+    "entry_aggressiveness": "NORMAL",
 }
 
 BOT_CONFIG = {
@@ -40,6 +42,12 @@ BOT_CONFIG = {
     "bypass_risk_in_demo": True,
     "min_candles_required": 50,
     "candle_interval_sec": 5,
+    "adaptive_mode": True,
+    "trade_cooldown_sec": 10,
+    "max_trades_per_trend": 3,
+    "entry_aggressiveness": "NORMAL",
+    "force_s15_mode": False,
+    "dynamic_regime_enabled": True,
 }
 
 

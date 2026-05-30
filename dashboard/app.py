@@ -334,6 +334,7 @@ def logs() -> list[dict]:
             confidence,
             result,
             pnl,
+            profit_percent,
             balance_after,
             mode,
             session_id
@@ -391,7 +392,7 @@ def bot_logs(
             str(e),
         )
 
-        
+
 @app.get("/trades/export")
 def export_trades():
 
@@ -421,6 +422,7 @@ def export_trades():
         confidence,
         result,
         pnl,
+        profit_percent,
         balance_after,
         mode,
         session_id
