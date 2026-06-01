@@ -9,3 +9,5 @@ bot_state.json
 bot_config.json
 *.log
 .DS_Store
+/venv
+.claude/

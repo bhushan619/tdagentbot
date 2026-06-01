@@ -17,7 +17,7 @@ import traceback
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 
@@ -25,6 +25,7 @@ import pandas as pd
 # removed in pandas 2.x. Re-add the small compatibility shim before importing
 # pandas_ta so the bot works with the pinned modern pandas version.
 if not hasattr(pd.Series, "append"):
+
     def _series_append(self, to_append, ignore_index=False, verify_integrity=False):
         return pd.concat(
             [self, to_append],
@@ -35,7 +36,10 @@ if not hasattr(pd.Series, "append"):
     pd.Series.append = _series_append
 
 if not hasattr(pd.DataFrame, "append"):
-    def _dataframe_append(self, other, ignore_index=False, verify_integrity=False, sort=False):
+
+    def _dataframe_append(
+        self, other, ignore_index=False, verify_integrity=False, sort=False
+    ):
         if isinstance(other, dict):
             other = pd.DataFrame([other])
         return pd.concat(
@@ -51,9 +55,13 @@ import pandas_ta as ta
 from playwright.async_api import async_playwright, Page, BrowserContext
 
 from shared_state import (
-    BOT_STATE, read_config, write_state, ROOT,
+    BOT_STATE,
+    read_config,
+    write_state,
+    ROOT,
 )
 from ml.exporter import append_training_row
+
 # ---------- constants ----------
 DEMO_URL = "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
 LIVE_URL = "https://pocketoption.com/en/cabinet/quick-high-low/"
@@ -63,7 +71,6 @@ SCREENSHOT_DIR = ROOT / "screenshots"
 DB_FILE = LOG_DIR / "trades.db"
 LOG_DIR.mkdir(exist_ok=True)
 SCREENSHOT_DIR.mkdir(exist_ok=True)
-
 
 
 USER_AGENT = (
@@ -81,7 +88,8 @@ def log(msg: str) -> None:
 # ---------- SQLite ----------
 def db_init() -> None:
     conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -97,7 +105,8 @@ def db_init() -> None:
             balance_after REAL,
             mode TEXT
         )
-    """)
+    """
+    )
     conn.commit()
     conn.close()
 
@@ -110,9 +119,18 @@ def db_insert_trade(row: dict) -> None:
             confidence, result, pnl, profit_percent, balance_after, mode)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            row["ts"], row["session_id"], row["symbol"], row["direction"],
-            row["amount"], row["duration"], row["confidence"], row["result"],
-            row["pnl"], row["profit_percent"], row["balance_after"], row["mode"],
+            row["ts"],
+            row["session_id"],
+            row["symbol"],
+            row["direction"],
+            row["amount"],
+            row["duration"],
+            row["confidence"],
+            row["result"],
+            row["pnl"],
+            row["profit_percent"],
+            row["balance_after"],
+            row["mode"],
         ),
     )
     conn.commit()
@@ -133,12 +151,19 @@ class MarketDataCollector:
         if self._current is None or self._current["t"] != bucket:
             if self._current is not None:
                 self.candles.append(self._current)
-                log(f"New Candle {symbol} O={self._current['o']:.5f} "
+                log(
+                    f"New Candle {symbol} O={self._current['o']:.5f} "
                     f"H={self._current['h']:.5f} L={self._current['l']:.5f} "
-                    f"C={self._current['c']:.5f}")
+                    f"C={self._current['c']:.5f}"
+                )
             self._current = {
-                "t": bucket, "symbol": symbol,
-                "o": price, "h": price, "l": price, "c": price, "v": 1,
+                "t": bucket,
+                "symbol": symbol,
+                "o": price,
+                "h": price,
+                "l": price,
+                "c": price,
+                "v": 1,
             }
         else:
             self._current["h"] = max(self._current["h"], price)
@@ -150,8 +175,9 @@ class MarketDataCollector:
         if not self.candles:
             return pd.DataFrame()
         df = pd.DataFrame(list(self.candles))
-        df = df.rename(columns={"o": "open", "h": "high", "l": "low",
-                                "c": "close", "v": "volume"})
+        df = df.rename(
+            columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}
+        )
         return df
 
 
@@ -174,56 +200,29 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ret"] = df["close"].pct_change()
     df["vol10"] = df["ret"].rolling(10).std()
 
-    df["momentum"] = (
-        df["close"] -
-        df["close"].shift(5)
-    )
+    df["momentum"] = df["close"] - df["close"].shift(5)
 
-    df["momentum_accel"] = (
-        df["momentum"] -
-        df["momentum"].shift(1)
-    )
+    df["momentum_accel"] = df["momentum"] - df["momentum"].shift(1)
 
-    df["candle_size"] = (
-        df["high"] - df["low"]
-    )
+    df["candle_size"] = df["high"] - df["low"]
 
-    df["body_size"] = (
-        df["close"] - df["open"]
-    ).abs()
+    df["body_size"] = (df["close"] - df["open"]).abs()
     # ---------- Phase 1 ML Features ----------
-    atr = ta.atr(
-        df["high"],
-        df["low"],
-        df["close"],
-        length=14
-    )
+    atr = ta.atr(df["high"], df["low"], df["close"], length=14)
 
     df["atr"] = atr
 
-    df["ema_distance"] = (
-        (df["ema_fast"] - df["ema_slow"]).abs()
-    )
+    df["ema_distance"] = (df["ema_fast"] - df["ema_slow"]).abs()
 
-    candle_range = (
-        df["high"] - df["low"]
-    ).replace(0, 1e-9)
+    candle_range = (df["high"] - df["low"]).replace(0, 1e-9)
 
-    upper_wick = (
-        df["high"] - df[["open", "close"]].max(axis=1)
-    )
+    upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
 
-    lower_wick = (
-        df[["open", "close"]].min(axis=1) - df["low"]
-    )
+    lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
 
-    df["upper_wick_ratio"] = (
-        upper_wick / candle_range
-    )
+    df["upper_wick_ratio"] = upper_wick / candle_range
 
-    df["lower_wick_ratio"] = (
-        lower_wick / candle_range
-    )
+    df["lower_wick_ratio"] = lower_wick / candle_range
 
     return df
 
@@ -281,177 +280,105 @@ def vote_signal(df: pd.DataFrame) -> tuple[str, float]:
     conf = 0.5 * agreement + 0.5 * avg_strength
     direction = "BUY" if bull > bear else "SELL"
     return direction, round(min(conf, 1.0), 2)
+
+
 # ============================================================
 # MARKET REGIME DETECTION
 # ============================================================
 
-def detect_market_regime(
-        atr,
-        ema_distance,
-        trend_bars,
-        candle_size,
-        cfg
-    ):
 
-        rd = cfg.get(
-            "regime_detection",
-            {}
-        )
+def detect_market_regime(atr, ema_distance, trend_bars, candle_size, cfg):
 
-        trending_ema_distance = rd.get(
-            "trending_ema_distance",
-            0.00005
-        )
+    rd = cfg.get("regime_detection", {})
 
-        trending_atr = rd.get(
-            "trending_atr",
-            0.00016
-        )
+    trending_ema_distance = rd.get("trending_ema_distance", 0.00005)
 
-        volatile_atr = rd.get(
-            "volatile_atr",
-            0.00024
-        )
+    trending_atr = rd.get("trending_atr", 0.00016)
 
-        volatile_candle_atr_multiplier = rd.get(
-            "volatile_candle_atr_multiplier",
-            2.2
-        )
+    volatile_atr = rd.get("volatile_atr", 0.00024)
 
-        ranging_ema_distance = rd.get(
-            "ranging_ema_distance",
-            0.000018
-        )
+    volatile_candle_atr_multiplier = rd.get("volatile_candle_atr_multiplier", 2.2)
 
-        ranging_atr = rd.get(
-            "ranging_atr",
-            0.00011
-        )
+    ranging_ema_distance = rd.get("ranging_ema_distance", 0.000018)
 
-        exhausted_trend_bars = rd.get(
-            "exhausted_trend_bars",
-            7
-        )
+    ranging_atr = rd.get("ranging_atr", 0.00011)
 
-        if (
-            ema_distance >= trending_ema_distance
-            and atr >= trending_atr
-        ):
-            return "TRENDING"
+    exhausted_trend_bars = rd.get("exhausted_trend_bars", 7)
 
-        if (
-            atr >= volatile_atr
-            or candle_size >= (
-                atr
-                * volatile_candle_atr_multiplier
-            )
-        ):
-            return "VOLATILE"
+    if ema_distance >= trending_ema_distance and atr >= trending_atr:
+        return "TRENDING"
 
-        if (
-            ema_distance <= ranging_ema_distance
-            and atr <= ranging_atr
-        ):
-            return "RANGING"
+    if atr >= volatile_atr or candle_size >= (atr * volatile_candle_atr_multiplier):
+        return "VOLATILE"
 
-        if trend_bars >= exhausted_trend_bars:
-            return "EXHAUSTED"
+    if ema_distance <= ranging_ema_distance and atr <= ranging_atr:
+        return "RANGING"
 
-        return "NORMAL"
+    if trend_bars >= exhausted_trend_bars:
+        return "EXHAUSTED"
+
+    return "NORMAL"
 
 
 # ============================================================
 # APPLY DYNAMIC CONFIG
 # ============================================================
 
-def apply_dynamic_config(
-        regime,
-        cfg
-    ):
 
-        dynamic = dict(cfg)
+def apply_dynamic_config(regime, cfg):
 
-        regimes = cfg.get(
-            "market_regimes",
-            {}
-        )
+    dynamic = dict(cfg)
 
-        normal_cfg = regimes.get(
-            "NORMAL",
-            {}
-        )
+    regimes = cfg.get("market_regimes", {})
 
-        regime_cfg = regimes.get(
-            regime,
-            normal_cfg
-        )
+    normal_cfg = regimes.get("NORMAL", {})
 
-        dynamic.update(regime_cfg)
+    regime_cfg = regimes.get(regime, normal_cfg)
 
-        return dynamic
+    dynamic.update(regime_cfg)
+
+    return dynamic
 
 
 # ============================================================
 # CHOOSE EXPIRY
 # ============================================================
 
-def choose_expiry(
-        conf,
-        atr,
-        ema_distance,
-        cfg,
-        regime="NORMAL"
-    ):
 
-        regimes = cfg.get(
-            "market_regimes",
-            {}
-        )
+def choose_expiry(conf, atr, ema_distance, cfg, regime="NORMAL"):
 
-        normal_cfg = regimes.get(
-            "NORMAL",
-            {}
-        )
+    regimes = cfg.get("market_regimes", {})
 
-        regime_cfg = regimes.get(
-            regime,
-            normal_cfg
-        )
+    normal_cfg = regimes.get("NORMAL", {})
 
-        s15_conf = regime_cfg.get(
-            "s15_conf",
-            0.70
-        )
+    regime_cfg = regimes.get(regime, normal_cfg)
 
-        s30_conf = regime_cfg.get(
-            "s30_conf",
-            0.75
-        )
+    s15_conf = regime_cfg.get("s15_conf", 0.70)
 
-        preferred_expiry = regime_cfg.get(
-            "preferred_expiry",
-            "S30"
-        )
+    s30_conf = regime_cfg.get("s30_conf", 0.75)
 
-        # preferred S15
-        if preferred_expiry == "S15":
+    preferred_expiry = regime_cfg.get("preferred_expiry", "S30")
 
-            if conf >= s15_conf:
-                return "S15", 15
+    # preferred S15
+    if preferred_expiry == "S15":
 
-            if conf >= s30_conf:
-                return "S30", 30
+        if conf >= s15_conf:
+            return "S15", 15
 
-        # preferred S30
-        else:
+        if conf >= s30_conf:
+            return "S30", 30
 
-            if conf >= s30_conf:
-                return "S30", 30
+    # preferred S30
+    else:
 
-            if conf >= s15_conf:
-                return "S15", 15
+        if conf >= s30_conf:
+            return "S30", 30
 
-        return None, None
+        if conf >= s15_conf:
+            return "S15", 15
+
+    return None, None
+
 
 # ---------- Bot ----------
 class PocketOptionBot:
@@ -484,11 +411,13 @@ class PocketOptionBot:
         self.last_trade_candle_ts = None
         self.last_saved_ts = None
         self.current_trend_trade_count = 0
-        self.last_regime = "NORMAL"
 
-        self.skip_candles_until = 0
         self.last_trade_direction = None
         self.same_direction_count = 0
+
+        self.hard_cooldown_candles = 0
+        self._last_cooldown_candle = None
+
         self.pending_regime = None
         self.pending_regime_count = 0
 
@@ -496,16 +425,9 @@ class PocketOptionBot:
 
     # ----- cooldown active -----
 
-    def _cooldown_active(self) -> bool:
+    def _cooldown_active(self, cooldown: int = 10) -> bool:
 
-        cooldown = self.cfg.get(
-            "trade_cooldown_sec",
-            10
-        )
-
-        return (
-            time.time() - self.last_trade_ts
-        ) < cooldown
+        return (time.time() - self.last_trade_ts) < cooldown
 
     # ----- state sync -----
     def _push_state(self, status: str) -> None:
@@ -514,67 +436,28 @@ class PocketOptionBot:
 
         effective_trades = self.wins + losses
 
-        win_rate = (
-            (self.wins / effective_trades) * 100
-            if effective_trades > 0 else 0.0
-        )
+        win_rate = (self.wins / effective_trades) * 100 if effective_trades > 0 else 0.0
 
         state = {
-            "balance": round(float(self.balance), 2),
-
+            "balance": round(self.balance, 2),
             "pnl": round(float(self.pnl), 2),
-
             "win_rate": round(win_rate, 1),
-
             "trades": int(self.trades),
-
             "wins": int(self.wins),
-
             "draws": int(self.draws),
-
             "losses": int(losses),
-
             "bot_status": status,
-
             "last_signal": self.last_signal,
-
             "last_result": self.last_result,
-
-            "last_confidence": getattr(
-                self,
-                "last_confidence",
-                0.0
-            ),
-
-            "consecutive_losses": int(
-                self.consecutive_losses
-            ),
-
-            "daily_loss": round(
-                float(self.daily_loss),
-                2
-            ),
-
+            "last_confidence": getattr(self, "last_confidence", 0.0),
+            "consecutive_losses": int(self.consecutive_losses),
+            "daily_loss": round(float(self.daily_loss), 2),
             "mode": self.cfg["mode"],
-
             "symbol": self.symbol,
-
             "session_started_at": self.session_started_at,
-
             "session_id": self.session_id,
-
-            "dataset_rows": getattr(
-                self,
-                "dataset_rows",
-                0
-            ),
-
-            "model_loaded": getattr(
-                self,
-                "model_loaded",
-                False
-            ),
-
+            "dataset_rows": getattr(self, "dataset_rows", 0),
+            "model_loaded": getattr(self, "model_loaded", False),
             "trade_duration_label": (
                 f"S{self.cfg['trade_duration_sec']}"
                 if self.cfg["trade_duration_sec"] < 60
@@ -584,18 +467,16 @@ class PocketOptionBot:
                     else f"H{int(self.cfg['trade_duration_sec'] / 3600)}"
                 )
             ),
-
-            "timestamp": datetime.now(
-                timezone.utc
-            ).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         write_state(state)
+
     # ----- WS handling -----
     def _attach_ws(self, page: Page) -> None:
         def on_websocket(ws):
             log(f"WS opened: {ws.url[:80]}")
-            pending: list[str] = []   # PER-CONNECTION queue
+            pending: list[str] = []  # PER-CONNECTION queue
 
             def on_frame(payload):
                 try:
@@ -647,6 +528,7 @@ class PocketOptionBot:
                     log(f"WS frame parse error: {e}")
 
             ws.on("framereceived", on_frame)
+
         page.on("websocket", on_websocket)
 
     def _try_raw_tick(self, data: Any) -> None:
@@ -654,9 +536,12 @@ class PocketOptionBot:
         if not isinstance(data, list) or not data:
             return
         # Single tick
-        if (len(data) == 3 and isinstance(data[0], str)
-                and isinstance(data[1], (int, float))
-                and isinstance(data[2], (int, float))):
+        if (
+            len(data) == 3
+            and isinstance(data[0], str)
+            and isinstance(data[1], (int, float))
+            and isinstance(data[2], (int, float))
+        ):
             sym, ts, price = data[0], float(data[1]), float(data[2])
             self.symbol = sym
             self.collector.add_tick(sym, ts, price)
@@ -664,18 +549,27 @@ class PocketOptionBot:
         # List of ticks
         if isinstance(data[0], list):
             for tick in data:
-                if (isinstance(tick, list) and len(tick) >= 3
-                        and isinstance(tick[0], str)
-                        and isinstance(tick[1], (int, float))
-                        and isinstance(tick[2], (int, float))):
+                if (
+                    isinstance(tick, list)
+                    and len(tick) >= 3
+                    and isinstance(tick[0], str)
+                    and isinstance(tick[1], (int, float))
+                    and isinstance(tick[2], (int, float))
+                ):
                     sym, ts, price = tick[0], float(tick[1]), float(tick[2])
                     self.symbol = sym
                     self.collector.add_tick(sym, ts, price)
 
     def _dispatch(self, label: str, data: Any) -> None:
         # Tick streams — PO uses several label names over time
-        if label in ("updateStream", "updateAssets", "loadHistoryPeriod",
-                     "instruments/update", "chart/tick", "stream"):
+        if label in (
+            "updateStream",
+            "updateAssets",
+            "loadHistoryPeriod",
+            "instruments/update",
+            "chart/tick",
+            "stream",
+        ):
             self._try_raw_tick(data if isinstance(data, list) else [])
         elif label == "updateClosedDeals" and isinstance(data, list):
             for deal in data:
@@ -827,7 +721,9 @@ class PocketOptionBot:
                 if got_num is not None and abs(got_num - float(amount)) <= 0.01:
                     log(f"Amount verified: {got_raw} via {sel}")
                     return True, got_num
-                log(f"Amount mismatch attempt {attempt}: wanted={wanted_text} got={got_raw}")
+                log(
+                    f"Amount mismatch attempt {attempt}: wanted={wanted_text} got={got_raw}"
+                )
             except Exception as e:
                 log(f"Amount set attempt {attempt} error: {e}")
             await asyncio.sleep(0.25)
@@ -835,7 +731,9 @@ class PocketOptionBot:
 
     async def _select_duration_from_popup(self, labels: list[str]) -> bool:
         acceptable = {self._norm_text(x) for x in labels}
-        _, control = await self._first_visible_locator(self._EXPIRATION_CONTROL_SELECTORS)
+        _, control = await self._first_visible_locator(
+            self._EXPIRATION_CONTROL_SELECTORS
+        )
         if control:
             try:
                 await control.click(timeout=3000)
@@ -857,17 +755,11 @@ class PocketOptionBot:
                     item = items.nth(i)
                     if not await item.is_visible():
                         continue
-                    txt = (
-                        await item.inner_text(timeout=1000)
-                        or ""
-                    ).strip()
+                    txt = (await item.inner_text(timeout=1000) or "").strip()
 
                     txt_seconds = self.normalize_expiry(txt)
 
-                    target_seconds = [
-                        self.normalize_expiry(x)
-                        for x in labels
-                    ]
+                    target_seconds = [self.normalize_expiry(x) for x in labels]
 
                     if txt_seconds in target_seconds:
 
@@ -875,10 +767,7 @@ class PocketOptionBot:
 
                         await asyncio.sleep(0.35)
 
-                        log(
-                            f"Duration selected from popup: "
-                            f"{txt}"
-                        )
+                        log(f"Duration selected from popup: " f"{txt}")
 
                         return True
             except Exception:
@@ -944,7 +833,9 @@ class PocketOptionBot:
             except Exception as e:
                 log(f"nav error: {e}")
 
-    async def _set_trade_params(self, amount: float, duration: int) -> tuple[bool, float, str]:
+    async def _set_trade_params(
+        self, amount: float, duration: int
+    ) -> tuple[bool, float, str]:
         try:
             amount_ok, actual_amount = await self._set_amount(float(amount))
             if not amount_ok:
@@ -968,16 +859,16 @@ class PocketOptionBot:
             return False, float(amount), ""
 
     async def _click_direction(self, direction: str) -> None:
-            sel = ".btn-call" if direction == "BUY" else ".btn-put"
-            log(f"CLICKED {direction}")
-            await self._page.click(sel, timeout=5000)
+        sel = ".btn-call" if direction == "BUY" else ".btn-put"
+        log(f"CLICKED {direction}")
+        await self._page.click(sel, timeout=5000)
 
     async def _execute_trade(
-            self,
-            direction: str,
-            confidence: float,
-            df: pd.DataFrame,
-        ) -> bool:
+        self,
+        direction: str,
+        confidence: float,
+        df: pd.DataFrame,
+    ) -> bool:
 
         if self._trade_in_progress:
             log("Trade already in progress, skipping")
@@ -994,11 +885,10 @@ class PocketOptionBot:
         try:
             await self._read_balance()
 
-            balance_before = float(self.balance)
+            balance_before = self.balance
 
-            ok, actual_amount, duration_label = await self._set_trade_params(
-                cfg["trade_amount"],
-                cfg["trade_duration_sec"]
+            ok, actual_amount, _ = await self._set_trade_params(
+                cfg["trade_amount"], cfg["trade_duration_sec"]
             )
 
             if not ok:
@@ -1045,7 +935,7 @@ class PocketOptionBot:
             # Use broker balance as source of truth
             # ---------------------------------------------------
 
-            balance_after = float(self.balance)
+            balance_after = self.balance
 
             balance_delta = round(balance_after - balance_before, 2)
 
@@ -1076,10 +966,7 @@ class PocketOptionBot:
             self.trades += 1
 
             # IMPORTANT FIX
-            self.pnl = round(
-                float(self.balance) - float(self.start_balance),
-                2
-            )
+            self.pnl = round(self.balance - float(self.start_balance), 2)
 
             if result == "WIN":
 
@@ -1089,9 +976,7 @@ class PocketOptionBot:
             elif result == "LOSS":
 
                 self.consecutive_losses += 1
-                self.daily_loss = abs(
-                    min(0, float(self.pnl))
-                )
+                self.daily_loss = abs(min(0, float(self.pnl)))
 
             elif result == "DRAW":
                 self.draws += 1
@@ -1110,14 +995,9 @@ class PocketOptionBot:
 
             if result == "LOSS":
 
-                self.skip_candles_until = (
-                    len(self.collector.candles) + 2
-                )
+                self.hard_cooldown_candles = 2
 
-                log(
-                    "Cooldown activated after loss "
-                    "(skip next 2 candles)"
-                )
+                log("Cooldown activated after loss " "(skip next 2 candles)")
 
             log(
                 f"SESSION => "
@@ -1126,101 +1006,55 @@ class PocketOptionBot:
                 f"session_pnl={self.pnl:+.2f}"
             )
 
-            db_insert_trade({
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "session_id": self.session_id,
-                "symbol": self.symbol,
-                "direction": direction,
-                "amount": actual_amount,
-                "duration": cfg["trade_duration_sec"],
-                "confidence": confidence,
-                "result": result,
-                "pnl": pnl,
-                "profit_percent": round((pnl / actual_amount) * 100, 1),
-                "balance_after": self.balance,
-                "mode": cfg["mode"],
-            })
+            db_insert_trade(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "session_id": self.session_id,
+                    "symbol": self.symbol,
+                    "direction": direction,
+                    "amount": actual_amount,
+                    "duration": cfg["trade_duration_sec"],
+                    "confidence": confidence,
+                    "result": result,
+                    "pnl": pnl,
+                    "profit_percent": round((pnl / actual_amount) * 100, 1),
+                    "balance_after": self.balance,
+                    "mode": cfg["mode"],
+                }
+            )
 
             latest = df.iloc[-1]
 
-            if (
-                hasattr(self, "skip_candles_until")
-                and len(self.collector.candles)
-                < self.skip_candles_until
-            ):
-
-                remaining = (
-                    self.skip_candles_until
-                    - len(self.collector.candles)
-                )
-
-                log(
-                    f"Hard cooldown active "
-                    f"({remaining} candles remaining)"
-                )
-
-                return
-
-            ema_distance = latest.get(
-                "ema_distance",
-                0
+            append_training_row(
+                {
+                    "timestamp": latest["t"],
+                    "open": latest["open"],
+                    "high": latest["high"],
+                    "low": latest["low"],
+                    "close": latest["close"],
+                    "volume": latest.get("volume", 0),
+                    "rsi": latest.get("rsi"),
+                    "ema_fast": latest.get("ema_fast"),
+                    "ema_slow": latest.get("ema_slow"),
+                    "macd": latest.get("macd"),
+                    "macd_signal": latest.get("macd_signal"),
+                    "signal": direction,
+                    "confidence": confidence,
+                    "executed": True,
+                    "rejection_reason": "",
+                    "result": result,
+                    "pnl": pnl,
+                    "future_close": latest["close"],
+                    "future_move": 0,
+                    "candle_size": (latest["high"] - latest["low"]),
+                    "body_size": abs(latest["close"] - latest["open"]),
+                    "atr": latest.get("atr"),
+                    "ema_distance": latest.get("ema_distance"),
+                    "upper_wick_ratio": latest.get("upper_wick_ratio"),
+                    "lower_wick_ratio": latest.get("lower_wick_ratio"),
+                    "momentum_accel": latest.get("momentum_accel"),
+                }
             )
-
-            append_training_row({
-
-                "timestamp": latest["t"],
-
-                "open": latest["open"],
-                "high": latest["high"],
-                "low": latest["low"],
-                "close": latest["close"],
-                "volume": latest.get("volume", 0),
-
-                "rsi": latest.get("rsi"),
-                "ema_fast": latest.get("ema_fast"),
-                "ema_slow": latest.get("ema_slow"),
-
-                "macd": latest.get("macd"),
-                "macd_signal": latest.get("macd_signal"),
-
-                "signal": direction,
-                "confidence": confidence,
-
-                "executed": True,
-                "rejection_reason": "",
-
-                "result": result,
-                "pnl": pnl,
-
-                "future_close": latest["close"],
-                "future_move": 0,
-
-                "candle_size": (
-                    latest["high"] - latest["low"]
-                ),
-
-                "body_size": abs(
-                    latest["close"] - latest["open"]
-                ),
-
-                "atr": latest.get("atr"),
-
-                "ema_distance": latest.get(
-                    "ema_distance"
-                ),
-
-                "upper_wick_ratio": latest.get(
-                    "upper_wick_ratio"
-                ),
-
-                "lower_wick_ratio": latest.get(
-                    "lower_wick_ratio"
-                ),
-
-                "momentum_accel": latest.get(
-                    "momentum_accel"
-                ),
-            })
 
             self._push_state("RUNNING")
 
@@ -1234,15 +1068,15 @@ class PocketOptionBot:
 
         finally:
 
-            self._trade_in_progress = False    
+            self._trade_in_progress = False
 
     async def _wait_for_trade_result(
-            self,
-            direction: str,
-            amount: float,
-            timeout: int = 30,
-            balance_before: Optional[float] = None,
-        ) -> tuple[str, float]:
+        self,
+        direction: str,
+        amount: float,
+        timeout: int = 30,
+        balance_before: Optional[float] = None,
+    ) -> tuple[str, float]:
 
         start = time.time()
 
@@ -1256,11 +1090,7 @@ class PocketOptionBot:
 
                     deal = self._closed_deals.pop(0)
 
-                    deal_id = str(
-                        deal.get("id")
-                        or deal.get("deal_id")
-                        or ""
-                    )
+                    deal_id = str(deal.get("id") or deal.get("deal_id") or "")
 
                     if deal_id in seen:
                         continue
@@ -1283,29 +1113,26 @@ class PocketOptionBot:
                     if balance_before is not None:
                         await asyncio.sleep(0.8)
                         if await self._read_balance() is not None:
-                            delta = round(float(self.balance) - float(balance_before), 2)
+                            delta = round(self.balance - float(balance_before), 2)
                             if abs(delta) > 0.01:
                                 result = "WIN" if delta > 0 else "LOSS"
-                                log(f"Resolved Trade from balance delta {result} pnl={delta:+.2f}")
+                                log(
+                                    f"Resolved Trade from balance delta {result} pnl={delta:+.2f}"
+                                )
                                 return result, delta
 
                     win_field = str(deal.get("win", deal.get("result", ""))).lower()
-                    is_draw = (
-                        abs(profit) < 0.01
-                        or abs(profit - invested) < 0.01
-                    )
+                    is_draw = abs(profit) < 0.01 or abs(profit - invested) < 0.01
 
-                    is_win = (
-                        not is_draw
-                        and (
-                            profit > 0
-                            or win_field in (
-                                "win",
-                                "won",
-                                "true",
-                                "1",
-                                "success",
-                            )
+                    is_win = not is_draw and (
+                        profit > 0
+                        or win_field
+                        in (
+                            "win",
+                            "won",
+                            "true",
+                            "1",
+                            "success",
                         )
                     )
                     if is_draw:
@@ -1317,11 +1144,7 @@ class PocketOptionBot:
 
                         result = "WIN"
 
-                        pnl = (
-                            profit - invested
-                            if profit > invested
-                            else profit
-                        )
+                        pnl = profit - invested if profit > invested else profit
 
                         if pnl <= 0:
                             pnl = invested * 0.8
@@ -1339,17 +1162,12 @@ class PocketOptionBot:
 
             except Exception as e:
 
-                log(
-                    f"_wait_for_trade_result error: {e}"
-                )
+                log(f"_wait_for_trade_result error: {e}")
 
             await asyncio.sleep(1)
 
         if balance_before is not None and await self._read_balance() is not None:
-            delta = round(
-                float(self.balance) - float(balance_before),
-                2
-            )
+            delta = round(self.balance - float(balance_before), 2)
             if abs(delta) > 0.01:
                 result = "WIN" if delta > 0 else "LOSS"
                 log(
@@ -1379,13 +1197,11 @@ class PocketOptionBot:
     async def strategy_cycle(self) -> None:
 
         self.cfg = read_config()
+        cfg = self.cfg
 
-        new_interval = int(
-            self.cfg.get(
-                "candle_interval_sec",
-                self.collector.interval
-            )
-        )
+        candles = self.collector.candles
+
+        new_interval = int(self.cfg.get("candle_interval_sec", self.collector.interval))
 
         if new_interval != self.collector.interval:
 
@@ -1428,36 +1244,42 @@ class PocketOptionBot:
 
         latest = df.iloc[-1]
 
+        # corrupted candle protection
+        if abs(latest["close"] - latest["open"]) > 0.01:
+
+            log("Skipping corrupted candle")
+
+            return
+
+        # ----- hard cooldown management -----
+
+        current_candle_ts = str(latest["t"])
+
+        if not hasattr(self, "_last_cooldown_candle"):
+
+            self._last_cooldown_candle = None
+
         if (
-            hasattr(self, "skip_candles_until")
-            and len(self.collector.candles)
-            < self.skip_candles_until
+            self.hard_cooldown_candles > 0
+            and self._last_cooldown_candle != current_candle_ts
         ):
 
-            remaining = (
-                self.skip_candles_until
-                - len(self.collector.candles)
-            )
+            self._last_cooldown_candle = current_candle_ts
 
-            log(
-                f"Hard cooldown active "
-                f"({remaining} candles remaining)"
-            )
+            remaining = self.hard_cooldown_candles
+
+            self.hard_cooldown_candles -= 1
+
+            log(f"Hard cooldown active " f"({remaining} candles remaining)")
 
             return
 
         # centralized indicators
-        ema_distance = float(
-            latest.get("ema_distance", 0)
-        )
+        ema_distance = float(latest.get("ema_distance", 0))
 
-        atr = float(
-            latest.get("atr", 0.0001)
-        )
+        atr = float(latest.get("atr", 0.0001))
 
-        rsi = float(
-            latest.get("rsi", 50)
-        )
+        rsi = float(latest.get("rsi", 50))
 
         if direction == "NONE":
 
@@ -1466,65 +1288,40 @@ class PocketOptionBot:
 
             self.last_saved_ts = latest["t"]
 
-            append_training_row({
-
-                "timestamp": latest["t"],
-
-                "open": latest["open"],
-                "high": latest["high"],
-                "low": latest["low"],
-                "close": latest["close"],
-                "volume": latest.get("volume", 0),
-
-                "rsi": latest.get("rsi"),
-                "ema_fast": latest.get("ema_fast"),
-                "ema_slow": latest.get("ema_slow"),
-
-                "macd": latest.get("macd"),
-                "macd_signal": latest.get("macd_signal"),
-
-                "signal": "NONE",
-                "confidence": conf,
-
-                "executed": False,
-                "rejection_reason": "NO_SIGNAL",
-
-                "result": "",
-                "pnl": 0,
-
-                "future_close": latest["close"],
-                "future_move": 0,
-
-                "candle_size": (
-                    latest["high"] - latest["low"]
-                ),
-
-                "body_size": abs(
-                    latest["close"] - latest["open"]
-                ),
-
-                "atr": latest.get("atr"),
-
-                "ema_distance": latest.get(
-                    "ema_distance"
-                ),
-
-                "upper_wick_ratio": latest.get(
-                    "upper_wick_ratio"
-                ),
-
-                "lower_wick_ratio": latest.get(
-                    "lower_wick_ratio"
-                ),
-
-                "momentum_accel": latest.get(
-                    "momentum_accel"
-                ),
-            })
+            append_training_row(
+                {
+                    "timestamp": latest["t"],
+                    "open": latest["open"],
+                    "high": latest["high"],
+                    "low": latest["low"],
+                    "close": latest["close"],
+                    "volume": latest.get("volume", 0),
+                    "rsi": latest.get("rsi"),
+                    "ema_fast": latest.get("ema_fast"),
+                    "ema_slow": latest.get("ema_slow"),
+                    "macd": latest.get("macd"),
+                    "macd_signal": latest.get("macd_signal"),
+                    "signal": "NONE",
+                    "confidence": conf,
+                    "executed": False,
+                    "rejection_reason": "NO_SIGNAL",
+                    "result": "",
+                    "pnl": 0,
+                    "future_close": latest["close"],
+                    "future_move": 0,
+                    "candle_size": (latest["high"] - latest["low"]),
+                    "body_size": abs(latest["close"] - latest["open"]),
+                    "atr": latest.get("atr"),
+                    "ema_distance": latest.get("ema_distance"),
+                    "upper_wick_ratio": latest.get("upper_wick_ratio"),
+                    "lower_wick_ratio": latest.get("lower_wick_ratio"),
+                    "momentum_accel": latest.get("momentum_accel"),
+                }
+            )
 
             self._push_state("RUNNING")
 
-            return True
+            return
 
         self.last_confidence = conf
 
@@ -1536,25 +1333,16 @@ class PocketOptionBot:
             return
 
         # sideways filter
-        recent_range = (
-            df["high"].tail(8).max() -
-            df["low"].tail(8).min()
-        )
+        recent_range = df["high"].tail(8).max() - df["low"].tail(8).min()
 
         if recent_range < 0.00020:
 
-            log(
-                f"Skipping sideways market "
-                f"(range={recent_range:.6f})"
-            )
+            log(f"Skipping sideways market " f"(range={recent_range:.6f})")
 
             return
 
         # range market filter
-        if (
-            abs(ema_distance) < 0.00002
-            and atr < 0.00010
-        ):
+        if abs(ema_distance) < 0.00002 and atr < 0.00010:
 
             log("Range market detected")
 
@@ -1563,77 +1351,44 @@ class PocketOptionBot:
         # weak trend filter
         if abs(ema_distance) < self.cfg.get("min_ema_distance", 0.00002):
 
-            log(
-                "Skipping weak trend "
-                f"(ema_distance={ema_distance:.6f})"
-            )
+            log("Skipping weak trend " f"(ema_distance={ema_distance:.6f})")
 
             return
 
         # candle analysis
-        candle_size = max(
-            latest.get("candle_size", 0),
-            0.000001
-        )
+        candle_size = max(latest.get("candle_size", 0), 0.000001)
 
-        body_size = latest.get(
-            "body_size",
-            0
-        )
+        body_size = latest.get("body_size", 0)
 
         body_ratio = body_size / candle_size
 
-        upper_wick_ratio = latest.get(
-            "upper_wick_ratio",
-            0
-        )
+        upper_wick_ratio = latest.get("upper_wick_ratio", 0)
 
-        lower_wick_ratio = latest.get(
-            "lower_wick_ratio",
-            0
-        )
+        lower_wick_ratio = latest.get("lower_wick_ratio", 0)
 
         # rejection wick filters
         if candle_size > 0:
 
-            if (
-                direction == "BUY"
-                and upper_wick_ratio > self.cfg.get(
-                    "max_upper_wick_ratio",
-                    0.55
-                )
+            if direction == "BUY" and upper_wick_ratio > self.cfg.get(
+                "max_upper_wick_ratio", 0.55
             ):
 
-                log(
-                    "BUY rejected: large upper wick"
-                )
+                log("BUY rejected: large upper wick")
 
                 return
 
-            if (
-                direction == "SELL"
-                and lower_wick_ratio > self.cfg.get(
-                    "max_lower_wick_ratio",
-                    0.55
-                )
+            if direction == "SELL" and lower_wick_ratio > self.cfg.get(
+                "max_lower_wick_ratio", 0.55
             ):
 
-                log(
-                    "SELL rejected: large lower wick"
-                )
+                log("SELL rejected: large lower wick")
 
                 return
 
         # exhaustion candle
-        if (
-            body_ratio >= 0.88
-            and candle_size >= atr * 1.8
-        ):
+        if body_ratio >= 0.88 and candle_size >= atr * 1.8:
 
-            log(
-                f"Skipping exhaustion candle "
-                f"(body_ratio={body_ratio:.2f})"
-            )
+            log(f"Skipping exhaustion candle " f"(body_ratio={body_ratio:.2f})")
 
             return
 
@@ -1641,28 +1396,18 @@ class PocketOptionBot:
 
         close = latest["close"]
 
-        move_size = abs(
-            close - prev_close
-        )
+        move_size = abs(close - prev_close)
 
-        distance_from_high = (
-            latest["high"] - latest["close"]
-        )
+        distance_from_high = latest["high"] - latest["close"]
 
-        distance_from_low = (
-            latest["close"] - latest["low"]
-        )
+        distance_from_low = latest["close"] - latest["low"]
 
         # trend aging preparation
         trend_bars = 0
 
         closes = df["close"].tail(10).tolist()
 
-        for i in range(
-            len(closes) - 1,
-            0,
-            -1
-        ):
+        for i in range(len(closes) - 1, 0, -1):
 
             if direction == "BUY":
 
@@ -1684,7 +1429,7 @@ class PocketOptionBot:
             ema_distance=ema_distance,
             trend_bars=trend_bars,
             candle_size=candle_size,
-            cfg=self.cfg
+            cfg=self.cfg,
         )
 
         if regime == self.pending_regime:
@@ -1698,250 +1443,180 @@ class PocketOptionBot:
 
         if self.pending_regime_count < 3:
 
-            log(
-                f"Waiting regime confirmation "
-                f"({regime})"
-            )
+            log(f"Waiting regime confirmation " f"({regime})")
 
             return
 
         regime = self.pending_regime
 
-        dynamic_cfg = apply_dynamic_config(
-            regime,
-            self.cfg
-        )
-        # apply dynamic runtime cooldown
-        self.cfg["trade_cooldown_sec"] = (
-            dynamic_cfg.get(
-                "trade_cooldown_sec",
-                10
-            )
-        )
+        dynamic_cfg = apply_dynamic_config(regime, self.cfg)
+        runtime_cooldown = dynamic_cfg.get("trade_cooldown_sec", 10)
 
         self.last_regime = regime
 
         # pullback quality filter
         if direction == "BUY":
 
-            if distance_from_low < (
-                atr * dynamic_cfg.get(
-                    "pullback_threshold",
-                    0.12
-                )
-            ):
+            if distance_from_low < (atr * dynamic_cfg.get("pullback_threshold", 0.12)):
 
-                log(
-                    "BUY skipped: weak pullback entry"
-                )
+                log("BUY skipped: weak pullback entry")
 
                 return
 
         if direction == "SELL":
 
-            if distance_from_high < (
-                atr * dynamic_cfg.get(
-                    "pullback_threshold",
-                    0.12
-                )
+            if distance_from_high < (atr * dynamic_cfg.get("pullback_threshold", 0.12)):
+
+                log("SELL skipped: weak pullback entry")
+
+                return
+        
+
+        # overextended candle
+        if move_size > self.cfg.get("max_single_candle_move", 0.00022):
+
+            log(f"Skipping overextended move " f"(move={move_size:.6f})")
+
+            return
+        
+        # momentum spike protection
+        if len(df) >= 3:
+
+            recent_move = abs(
+                latest["close"] -
+                df.iloc[-3]["close"]
+            )
+
+            if (
+                recent_move > atr * 2.8
             ):
 
                 log(
-                    "SELL skipped: weak pullback entry"
+                    "Skipping momentum spike"
                 )
 
                 return
 
-        # overextended candle
-        if move_size > self.cfg.get(
-            "max_single_candle_move",
-            0.00022
-        ):
-
-            log(
-                f"Skipping overextended move "
-                f"(move={move_size:.6f})"
-            )
-
-            return
-
         # momentum acceleration
-        accel = latest.get(
-            "momentum_accel",
-            0
-        )
+        accel = latest.get("momentum_accel", 0)
 
-        if (
-            direction == "BUY"
-            and accel < dynamic_cfg.get(
-                "max_accel_buy",
-                -0.00028
-            )
-        ):
+        if direction == "BUY" and accel < dynamic_cfg.get("max_accel_buy", -0.00028):
 
-            log(
-                "BUY blocked by strong bearish acceleration "
-                f"(accel={accel:.6f})"
-            )
+            log("BUY blocked by strong bearish acceleration " f"(accel={accel:.6f})")
 
             return
 
-        if (
-            direction == "SELL"
-            and accel > dynamic_cfg.get(
-                "max_accel_sell",
-                0.00028
-            )
-        ):
+        if direction == "SELL" and accel > dynamic_cfg.get("max_accel_sell", 0.00028):
 
-            log(
-                "SELL blocked by strong bullish acceleration "
-                f"(accel={accel:.6f})"
-            )
+            log("SELL blocked by strong bullish acceleration " f"(accel={accel:.6f})")
 
             return
 
-        
         # advanced trend exhaustion
-        ema_slope = abs(
-            latest.get("ema_fast", 0)
-            - latest.get("ema_slow", 0)
-        )
+        ema_slope = abs(latest.get("ema_fast", 0) - latest.get("ema_slow", 0))
 
-        recent_body_avg = (
-            df["body_size"]
-            .tail(4)
-            .mean()
-        )
+        recent_body_avg = df["body_size"].tail(4).mean()
 
-        if (
-            trend_bars >= 5
-            and recent_body_avg < atr * 0.55
-            and ema_slope < 0.000025
-        ):
+        if trend_bars >= 5 and recent_body_avg < atr * 0.55 and ema_slope < 0.000025:
 
-            log(
-                "Trend exhaustion detected"
-            )
+            log("Trend exhaustion detected")
 
             return
 
-        if (
-            trend_bars >= self.cfg.get("trend_age_limit", 6)
-            and conf < 0.82
-        ):
+        if trend_bars >= self.cfg.get("trend_age_limit", 6) and conf < 0.82:
 
-            log(
-                f"Skipping aged trend "
-                f"(trend_bars={trend_bars})"
-            )
+            log(f"Skipping aged trend " f"(trend_bars={trend_bars})")
 
             return
 
-        log(
-            f"Market regime: {regime} | "
-            f"conf_threshold={dynamic_cfg['confidence_threshold']} "
-            f"cooldown={dynamic_cfg['trade_cooldown_sec']}"
-        )
+        if getattr(self, "_last_logged_regime", None) != regime:
+
+            self._last_logged_regime = regime
+
+            log(
+                f"Market regime: {regime} | "
+                f"conf_threshold={dynamic_cfg['confidence_threshold']} "
+                f"cooldown={runtime_cooldown}"
+            )
 
         # reset trend trade count on weak trend
         if trend_bars < 2:
 
             self.current_trend_trade_count = 0
         # max trades per trend protection
-        if (
-            self.current_trend_trade_count >=
-            dynamic_cfg.get(
-                "max_trades_per_trend",
-                3
-            )
-        ):
+        if self.current_trend_trade_count >= dynamic_cfg.get("max_trades_per_trend", 3):
 
-            log(
-                f"Max trades reached for trend "
-                f"({self.current_trend_trade_count})"
-            )
+            log(f"Max trades reached for trend " f"({self.current_trend_trade_count})")
 
             return
-            
+
         # multi-candle overextension
-        recent_move = abs(
-            closes[-1] - closes[-4]
-        )
+        recent_move = abs(closes[-1] - closes[-4])
 
         if recent_move > (atr * self.cfg.get("max_recent_move_atr_multiplier", 2.8)):
 
             conf -= 0.12
 
-            log(
-                f"Confidence penalty: overextended move (conf={conf:.2f})"
-            )
+            log(f"Confidence penalty: overextended move (conf={conf:.2f})")
 
         # confidence penalties
         if abs(ema_distance) < self.cfg.get("min_ema_distance", 0.00002) * 2.5:
 
             conf -= self.cfg.get("confidence_penalty_weak_trend", 0.08)
 
-            log(
-                f"Confidence penalty: weak trend "
-                f"(conf={conf:.2f})"
-            )
+            log(f"Confidence penalty: weak trend " f"(conf={conf:.2f})")
 
         if trend_bars >= 5:
 
             conf -= self.cfg.get("confidence_penalty_aged_trend", 0.07)
 
-            log(
-                f"Confidence penalty: aged trend "
-                f"(conf={conf:.2f})"
-            )
+            log(f"Confidence penalty: aged trend " f"(conf={conf:.2f})")
 
         if atr < self.cfg.get("min_atr", 0.00012):
 
             conf -= self.cfg.get("confidence_penalty_low_volatility", 0.06)
 
-            log(
-                f"Confidence penalty: low volatility "
-                f"(conf={conf:.2f})"
-            )
+            log(f"Confidence penalty: low volatility " f"(conf={conf:.2f})")
 
-        if (
-            direction == "BUY"
-            and upper_wick_ratio > 0.35
-        ):
+        if direction == "BUY" and upper_wick_ratio > 0.35:
 
             conf -= self.cfg.get("confidence_penalty_weak_trend", 0.08)
 
-            log(
-                f"Confidence penalty: bearish wick "
-                f"(conf={conf:.2f})"
-            )
+            log(f"Confidence penalty: bearish wick " f"(conf={conf:.2f})")
 
-        if (
-            direction == "SELL"
-            and lower_wick_ratio > 0.35
-        ):
+        if direction == "SELL" and lower_wick_ratio > 0.35:
 
             conf -= self.cfg.get("confidence_penalty_weak_trend", 0.08)
 
-            log(
-                f"Confidence penalty: bullish wick "
-                f"(conf={conf:.2f})"
+            log(f"Confidence penalty: bullish wick " f"(conf={conf:.2f})")
+
+        conf = max(0.0, min(conf, 1.0))
+
+        if (
+            getattr(
+                self,
+                "_last_logged_signal",
+                None
+            ) != (
+                direction,
+                round(conf, 2)
+            )
+        ):
+
+            self._last_logged_signal = (
+                direction,
+                round(conf, 2)
             )
 
-        conf = max(
-            0.0,
-            min(conf, 1.0)
-        )
+            log(
+                f"Signal: {direction} "
+                f"conf={conf:.2f}"
+            )
 
-        log(
-            f"Signal: {direction} "
-            f"conf={conf:.2f}"
-        )
+        # stricter BUY entries
+        if direction == "BUY":
 
-        self.last_signal = direction
-
-        self._push_state("RUNNING")
+            conf += 0.04
 
         # confidence threshold
         if conf < dynamic_cfg["confidence_threshold"]:
@@ -1954,10 +1629,13 @@ class PocketOptionBot:
 
             return
 
+        self.last_signal = direction
+
+        self._push_state("RUNNING")
         latest_candle_ts = df.iloc[-1]["t"]
 
         # cooldown
-        if self._cooldown_active():
+        if self._cooldown_active(runtime_cooldown):
 
             log("Cooldown active")
 
@@ -1970,41 +1648,35 @@ class PocketOptionBot:
             return
 
         # market bias filter
-        overall_trend = (
-            latest["ema_fast"] -
-            latest["ema_slow"]
-        )
+        overall_trend = latest["ema_fast"] - latest["ema_slow"]
 
+        if direction == "BUY" and overall_trend < 0:
+
+            log("BUY blocked by bearish market bias")
+
+            return
+
+        if direction == "SELL" and overall_trend > 0:
+
+            log("SELL blocked by bullish market bias")
+
+            return
+        
+        # trend exhaustion protection
         if (
             direction == "BUY"
-            and overall_trend < 0
+            and trend_bars >= 5
+            and conf < 0.78
         ):
 
             log(
-                "BUY blocked by bearish market bias"
+                "BUY skipped: late trend continuation"
             )
 
             return
 
-        if (
-            direction == "SELL"
-            and overall_trend > 0
-        ):
-
-            log(
-                "SELL blocked by bullish market bias"
-            )
-
-            return
-
-        # dynamic expiry
-        label, seconds = choose_expiry(
-            conf,
-            atr,
-            ema_distance,
-            self.cfg,
-            regime
-        )
+        # expiry selection
+        label, seconds = choose_expiry(conf, atr, ema_distance, self.cfg, regime)
 
         if not seconds:
 
@@ -2012,68 +1684,80 @@ class PocketOptionBot:
 
             return
 
-        self.cfg["trade_duration_sec"] = seconds
+        selected_trade_duration = seconds
 
-        log(
-            f"Dynamic expiry selected "
-            f"{label} ({seconds}s)"
-        )
+        log(f"Dynamic expiry selected " f"{label} ({seconds}s)")
 
         await self._page.keyboard.press("Escape")
 
         await asyncio.sleep(0.2)
 
+        # reset repeated direction tracking
+        # after long inactivity
+
+        if (
+            hasattr(self, "last_trade_ts")
+            and time.time() - self.last_trade_ts > 120
+        ):
+
+            self.same_direction_count = 0
+            self.last_trade_direction = None
+
         # adaptive repeated direction protection
 
         max_same_direction = {
-
             "TRENDING": 5,
             "NORMAL": 3,
             "VOLATILE": 2,
             "RANGING": 1,
-            "EXHAUSTED": 1
-
+            "EXHAUSTED": 1,
         }.get(regime, 3)
 
-        if direction == self.last_trade_direction:
-
-            self.same_direction_count += 1
-
-        else:
-
-            self.same_direction_count = 1
-
-        self.last_trade_direction = direction
+        projected_same_direction_count = (
+            self.same_direction_count + 1
+            if direction == self.last_trade_direction
+            else 1
+        )
 
         if (
-            self.same_direction_count >
+            projected_same_direction_count >
             max_same_direction
         ):
 
             log(
                 f"Too many repeated "
                 f"{direction} trades "
-                f"({self.same_direction_count}/"
+                f"({projected_same_direction_count}/"
                 f"{max_same_direction})"
             )
 
             return
 
-        ok = await self._execute_trade(
-            direction,
-            conf,
-            df
-        )
+        original_duration = cfg["trade_duration_sec"]
+
+        cfg["trade_duration_sec"] = selected_trade_duration
+
+        ok = await self._execute_trade(direction, conf, df)
+
+        cfg["trade_duration_sec"] = original_duration
 
         if ok:
 
-            self.last_trade_candle_ts = (
-                latest_candle_ts
-            )
+            self.last_trade_candle_ts = latest_candle_ts
 
             # count ONLY executed trades
             self.current_trend_trade_count += 1
-    
+
+            if direction == self.last_trade_direction:
+
+                self.same_direction_count += 1
+
+            else:
+
+                self.same_direction_count = 1
+
+            self.last_trade_direction = direction
+
     # ----- Entry -----
     async def run(self) -> None:
         db_init()
@@ -2110,7 +1794,7 @@ class PocketOptionBot:
             await self._ensure_mode_url()
             await self._read_balance()
             if self.start_balance == 0:
-                self.start_balance = float(self.balance)
+                self.start_balance = self.balance
                 log(f"Session start balance: {self.start_balance}")
 
             try:
@@ -2118,6 +1802,7 @@ class PocketOptionBot:
 
                 if dataset_path.exists():
                     import pandas as pd
+
                     self.dataset_rows = len(pd.read_csv(dataset_path))
 
             except Exception as e:

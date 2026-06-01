@@ -421,7 +421,7 @@ export default function App() {
               Trade Status
             </div> */}
 
-            <div className="text-4xl font-black tracking-tight mb-3">
+            <div className="text-2xl font-black tracking-tight mb-3">
               Bot Status : {status.bot_status || "IDLE"}
             </div>
 
@@ -519,7 +519,7 @@ export default function App() {
             </div>
           </Card>
           <Card className="p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500 mb-4">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">
             Model
             </div>
 
